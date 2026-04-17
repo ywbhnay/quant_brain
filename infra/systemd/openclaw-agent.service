@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenClaw AI Spokesperson
+After=network.target
+
+[Service]
+Type=simple
+User=stock
+WorkingDirectory=/home/quant/cokyquant/quant_brain
+ExecStart=/home/quant/cokyquant/quant_brain/venv_claw/bin/python openclaw/agent_main.py
+Restart=always
+
+MemoryHigh=250M
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target

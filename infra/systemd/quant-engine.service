@@ -1,0 +1,22 @@
+[Unit]
+Description=Quantitative Trading Engine
+After=network.target redis-server.service
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=stock
+WorkingDirectory=/home/quant/cokyquant/quant_brain
+ExecStart=/home/quant/cokyquant/quant_brain/venv_quant/bin/python quant_engine/main_quant.py
+Restart=always
+RestartSec=3
+
+# 内存管控：软限流 1.5G 触发 GC，硬杀 2G
+MemoryHigh=1500M
+MemoryMax=2G
+# 阶级隔离：极高 OOM 风险！系统内存不足时优先祭天，绝对保护 Redis
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,43 @@
+[project]
+name = "quant-brain"
+version = "0.1.0"
+description = "A股量化交易系统 — 轻量级量化引擎 + FastAPI 网关 + AI Agent 交互"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "asyncpg>=0.30",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+]
+engine = [
+    "polars>=1.0",
+    "redis>=5.0",
+    "asyncpg>=0.30",
+    "httpx>=0.27",
+]
+agent = [
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "redis>=5.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

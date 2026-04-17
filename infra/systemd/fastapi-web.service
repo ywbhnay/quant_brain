@@ -1,0 +1,19 @@
+[Unit]
+Description=Stock FastAPI Web Gateway
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=stock
+WorkingDirectory=/home/quant/cokyquant/quant_brain
+ExecStart=/home/quant/cokyquant/quant_brain/venv_web/bin/uvicorn web_backend.main:app --host 127.0.0.1 --port 8000 --workers 2 --loop uvloop
+ReloadExec=/home/quant/cokyquant/quant_brain/venv_web/bin/uvicorn web_backend.main:app --host 127.0.0.1 --port 8000 --workers 2 --loop uvloop
+Restart=always
+
+# 内存管控：800M 硬限
+MemoryHigh=600M
+MemoryMax=800M
+OOMScoreAdjust=0
+
+[Install]
+WantedBy=multi-user.target
