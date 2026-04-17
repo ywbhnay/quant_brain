@@ -3,30 +3,36 @@
 
 职责：
 1. 接收策略信号，执行风控检查
-2. 创建订单记录 (PENDING)，写入 Redis Stream (SENT)
-3. 封装 xtquant miniQMT 下单接口 (Windows 端调用)
-4. 撤单指令下发
+2. 创建订单记录 (PENDING)
+3. 先写 Redis Stream (SENT)，成功后再更新 DB 状态为 SENT
+4. 封装 xtquant miniQMT 下单接口 (Windows 端调用)
+5. 撤单指令下发
 
 数据流 (Ubuntu quant-engine 侧):
   策略信号 → RiskChecker.check() → 通过则创建订单(PENDING)
-                                  → 写入 Redis Stream trade_orders
-                                  → 状态流转 PENDING → SENT
+                                  → 写入 Redis Stream trade_orders (msgpack)
+                                  → 更新 DB 状态 PENDING → SENT
 
 数据流 (Win10 miniQMT 侧):
   XREADGROUP trade_orders → xtquant 下单 → XACK + 推送状态回 Redis Stream
 
 设计原则：
 - xtquant 接口可替换 (真实/模拟)，通过 protocol 解耦
-- 订单持久化在发送前完成，确保可追溯
-- Redis Stream 作为跨平台通信骨干，不依赖 HTTP
+- Redis 写入先于 DB 状态更新，避免"僵尸订单"
+- Redis Stream 作为跨平台通信骨干，使用 msgpack 二进制序列化
+- 兜底协程扫描超时未 ACK 订单
 """
-import json
+
+import base64
 import logging
 import uuid
-from typing import Any, Callable, Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
+
+import msgpack
 
 from quant_engine.order.state_machine import OrderStatus
-from quant_engine.risk.checker import RiskChecker, RiskCheckResult
+from quant_engine.risk.checker import RiskChecker
 
 logger = logging.getLogger("order_executor")
 
@@ -43,6 +49,7 @@ ORDER_STATUS_STREAM = "order_status_updates"
 # ---------------------------------------------------------------------------
 # xtquant 适配器接口
 # ---------------------------------------------------------------------------
+
 
 class XtquantAdapter(Protocol):
     """
@@ -82,6 +89,7 @@ class XtquantAdapter(Protocol):
 # 模拟 xtquant 适配器 (Linux 开发/测试用)
 # ---------------------------------------------------------------------------
 
+
 class MockXtquantAdapter:
     """
     模拟 xtquant 适配器。
@@ -100,6 +108,7 @@ class MockXtquantAdapter:
         order_type: str = "LIMIT",
     ) -> dict[str, Any]:
         import asyncio
+
         await asyncio.sleep(0.05)  # 模拟网络延迟
         return {
             "qmt_order_id": f"mock-{uuid.uuid4().hex[:8]}",
@@ -109,6 +118,7 @@ class MockXtquantAdapter:
 
     async def cancel_order(self, qmt_order_id: str) -> bool:
         import asyncio
+
         await asyncio.sleep(0.02)
         return True
 
@@ -116,6 +126,7 @@ class MockXtquantAdapter:
 # ---------------------------------------------------------------------------
 # 订单执行器
 # ---------------------------------------------------------------------------
+
 
 class OrderExecutor:
     """
@@ -176,9 +187,12 @@ class OrderExecutor:
 
         1. 风控检查
         2. 生成订单 ID，创建状态机 (PENDING)
-        3. 持久化到 PostgreSQL orders 表
-        4. 状态转换 PENDING → SENT
-        5. 写入 Redis Stream trade_orders
+        3. 持久化到 PostgreSQL orders 表 (PENDING)
+        4. 写入 Redis Stream trade_orders (msgpack 二进制)
+        5. 状态转换 PENDING → SENT + 更新数据库
+
+        关键：先写 Redis，再改 DB。如果写 Redis 后崩溃，
+        DB 仍为 PENDING，重启后可通过兜底协程重发或撤销。
 
         Returns:
             order_id (UUID)
@@ -214,6 +228,7 @@ class OrderExecutor:
 
         # 2. 创建状态机 (PENDING)
         from quant_engine.order.state_machine import OrderStateMachine
+
         sm = OrderStateMachine(OrderStatus.PENDING, order_id=order_id)
 
         # 3. 持久化 (PENDING)
@@ -227,13 +242,7 @@ class OrderExecutor:
             status=OrderStatus.PENDING,
         )
 
-        # 4. 状态转换 PENDING → SENT
-        sm.transition(OrderStatus.SENT)
-
-        # 5. 更新数据库状态
-        await self._update_order_status(order_id, OrderStatus.SENT)
-
-        # 6. 写入 Redis Stream
+        # 4. 先写 Redis Stream (msgpack 二进制)
         await self._publish_to_stream(
             order_id=order_id,
             ts_code=ts_code,
@@ -242,6 +251,10 @@ class OrderExecutor:
             direction=direction,
             order_type=order_type,
         )
+
+        # 5. Redis 成功后再更新数据库状态为 SENT
+        sm.transition(OrderStatus.SENT)
+        await self._update_order_status(order_id, OrderStatus.SENT)
 
         logger.info(f"订单已发送到 Redis Stream: {order_id}")
         return order_id
@@ -256,8 +269,8 @@ class OrderExecutor:
 
         1. 查询当前订单状态
         2. 校验是否可撤 (PENDING / SENT / ACK / PARTIAL)
-        3. 状态转换 → CANCELLED
-        4. 推送撤单指令到 Redis Stream
+        3. 推送撤单指令到 Redis Stream (msgpack)
+        4. 更新数据库状态 → CANCELLED
 
         Returns:
             True 撤单指令已发送
@@ -279,6 +292,7 @@ class OrderExecutor:
             OrderStateMachine,
             OrderTransitionError,
         )
+
         sm = OrderStateMachine(OrderStatus(current_status), order_id=order_id)
         try:
             sm.transition(OrderStatus.CANCELLED)
@@ -286,10 +300,7 @@ class OrderExecutor:
             logger.warning(f"撤单失败: {e}")
             raise
 
-        # 更新数据库状态
-        await self._update_order_status(order_id, OrderStatus.CANCELLED)
-
-        # 推送撤单指令到 Redis Stream
+        # 先推送撤单指令到 Redis Stream
         if self._redis:
             await self._redis.xadd(
                 TRADE_ORDERS_STREAM,
@@ -300,6 +311,9 @@ class OrderExecutor:
                 },
             )
             logger.info(f"撤单指令已发送: {order_id}")
+
+        # 成功后再更新数据库状态
+        await self._update_order_status(order_id, OrderStatus.CANCELLED)
 
         return True
 
@@ -377,22 +391,33 @@ class OrderExecutor:
         direction: str,
         order_type: str,
     ) -> None:
-        """写入 Redis Stream"""
+        """
+        写入 Redis Stream (msgpack 二进制 → base64 字符串)。
+
+        Redis Stream 的值必须是字符串（受 decode_responses=True 限制），
+        因此将 msgpack 做 base64 编码后存储。
+        消费端: base64.b64decode(raw) + msgpack.unpackb(...) 还原。
+        """
         if self._redis is None:
             logger.warning("无 Redis 客户端，订单未写入 Stream")
             return
 
-        await self._redis.xadd(
-            TRADE_ORDERS_STREAM,
-            data={
+        payload = msgpack.packb(
+            {
                 "action": "place",
                 "order_id": order_id,
                 "ts_code": ts_code,
-                "price": str(price),
-                "volume": str(volume),
+                "price": price,
+                "volume": volume,
                 "direction": direction,
                 "order_type": order_type,
             },
+            use_bin_type=True,
+        )
+
+        await self._redis.xadd(
+            TRADE_ORDERS_STREAM,
+            data={"payload": base64.b64encode(payload).decode("ascii")},
             maxlen=50000,
         )
 

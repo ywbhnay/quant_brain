@@ -12,6 +12,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
+import base64
+import msgpack
 import pytest
 
 
@@ -222,9 +224,11 @@ class TestRiskToOrderIntegration:
         # 验证 Redis Stream 写入
         mock_redis.xadd.assert_called_once()
         call_kwargs = mock_redis.xadd.call_args
-        assert call_kwargs[1]["data"]["action"] == "place"
-        assert call_kwargs[1]["data"]["ts_code"] == "000001.SZ"
-        assert call_kwargs[1]["data"]["direction"] == "BUY"
+        payload = base64.b64decode(call_kwargs[1]["data"]["payload"])
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["action"] == "place"
+        assert decoded["ts_code"] == "000001.SZ"
+        assert decoded["direction"] == "BUY"
 
     @pytest.mark.asyncio
     async def test_order_rejected_by_risk_single_amount(self, mock_pool, mock_redis):
@@ -544,8 +548,10 @@ class TestRedisStreamIntegration:
         mock_redis.xadd.assert_called_once()
         args, kwargs = mock_redis.xadd.call_args
         assert args[0] == TRADE_ORDERS_STREAM
-        assert kwargs["data"]["action"] == "place"
-        assert kwargs["data"]["ts_code"] == "000001.SZ"
+        payload = base64.b64decode(kwargs["data"]["payload"])
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["action"] == "place"
+        assert decoded["ts_code"] == "000001.SZ"
 
     @pytest.mark.asyncio
     async def test_cancel_published_to_stream(self, mock_redis):

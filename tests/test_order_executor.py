@@ -11,8 +11,10 @@ order/executor.py 单元测试
 7. 无 Redis / 无 DB 配置降级
 """
 import asyncio
+import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import msgpack
 import pytest
 
 from quant_engine.order.executor import (
@@ -120,10 +122,13 @@ class TestOrderExecutorPlaceOrder:
 
         # Redis Stream 被写入
         mock_redis.xadd.assert_called_once()
-        call_kwargs = mock_redis.xadd.call_args
-        assert call_kwargs[0][0] == TRADE_ORDERS_STREAM
-        assert call_kwargs[1]["data"]["ts_code"] == "000001.SZ"
-        assert call_kwargs[1]["data"]["action"] == "place"
+        call_args = mock_redis.xadd.call_args
+        assert call_args[0][0] == TRADE_ORDERS_STREAM
+        # 解码 base64 + msgpack payload
+        payload = base64.b64decode(call_args[1]["data"]["payload"])
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["ts_code"] == "000001.SZ"
+        assert decoded["action"] == "place"
 
         # 返回 UUID
         assert order_id is not None
