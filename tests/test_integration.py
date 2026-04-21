@@ -578,13 +578,16 @@ class TestRedisStreamIntegration:
 
         await executor.cancel_order("cancel-stream-test")
 
-        # 找到 xadd 中 action=cancel 的调用
+        # 找到 xadd 中 payload 解码后 action=cancel 的调用
         cancel_calls = [
             c for c in mock_redis.xadd.call_args_list
-            if c[1].get("data", {}).get("action") == "cancel"
+            if c[1].get("data", {}).get("payload") is not None
         ]
         assert len(cancel_calls) >= 1
-        assert cancel_calls[0][1]["data"]["order_id"] == "cancel-stream-test"
+        payload = base64.b64decode(cancel_calls[0][1]["data"]["payload"])
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["action"] == "cancel"
+        assert decoded["order_id"] == "cancel-stream-test"
 
     @pytest.mark.asyncio
     async def test_redis_client_stream_operations(self):

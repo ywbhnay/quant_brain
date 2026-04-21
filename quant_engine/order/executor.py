@@ -300,15 +300,19 @@ class OrderExecutor:
             logger.warning(f"撤单失败: {e}")
             raise
 
-        # 先推送撤单指令到 Redis Stream
+        # 先推送撤单指令到 Redis Stream (msgpack + base64，与下单格式一致)
         if self._redis:
-            await self._redis.xadd(
-                TRADE_ORDERS_STREAM,
-                data={
+            cancel_payload = msgpack.packb(
+                {
                     "action": "cancel",
                     "order_id": order_id,
                     "qmt_order_id": qmt_order_id or "",
                 },
+                use_bin_type=True,
+            )
+            await self._redis.xadd(
+                TRADE_ORDERS_STREAM,
+                data={"payload": base64.b64encode(cancel_payload).decode("ascii")},
             )
             logger.info(f"撤单指令已发送: {order_id}")
 
