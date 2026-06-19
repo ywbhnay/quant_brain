@@ -2,6 +2,7 @@
 量化引擎配置管理
 从环境变量读取，启动时验证必填项
 """
+
 import os
 
 
@@ -9,13 +10,16 @@ class QuantConfig:
     """量化引擎配置，全部从环境变量读取"""
 
     # PostgreSQL 连接
-    PG_HOST: str = os.getenv("PG_HOST", "127.0.0.1")
+    # 默认指向 quant_data_pipeline 已填充的 ETL 库 (192.168.3.11 / quant_db)
+    # quant_brain 不直接调 Tushare 拉历史数据，而是读取该库
+    PG_HOST: str = os.getenv("PG_HOST", "192.168.3.11")
     PG_PORT: int = int(os.getenv("PG_PORT", "5432"))
-    PG_USER: str = os.getenv("PG_USER", "postgres")
+    PG_USER: str = os.getenv("PG_USER", "quant_user")
     PG_PASSWORD: str = os.getenv("PG_PASSWORD", "")
-    PG_DATABASE: str = os.getenv("PG_DATABASE", "quant_data")
+    PG_DATABASE: str = os.getenv("PG_DATABASE", "quant_db")
 
     # Tushare API Token
+    # 仅 RealtimeQuoteClient (实时 5 档快照) 需要；纯 PG 读取模式可留空
     TUSHARE_TOKEN: str = os.getenv("TUSHARE_TOKEN", "")
 
     # Redis 连接

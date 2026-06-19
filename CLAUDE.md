@@ -55,13 +55,14 @@ sudo journalctl -u quant-engine -f
 ### Tech Stack
 | Layer | Technology |
 |-------|------------|
-| Data | Tushare Pro API |
+| Data source | PostgreSQL (ETL-populated by `quant_data_pipeline`) |
 | Processing | Polars (LazyFrame + streaming) |
 | Database | PostgreSQL 15 + asyncpg (NO SQLAlchemy) |
 | Queue | Redis 7 (Stream + Pub/Sub + Hash) |
 | Web | FastAPI + uvicorn + asyncpg |
 | Trading | xtquant miniQMT |
 | Agent | OpenClaw + httpx |
+| Realtime snapshot | Tushare realtime_quote (5-level bid/ask only) |
 | Deploy | systemd + cgroup v2 |
 
 ### Key Constraints (DO NOT violate)
@@ -70,6 +71,7 @@ sudo journalctl -u quant-engine -f
 - **NO `.collect()` full data** — always use LazyFrame + streaming + chunking
 - **NO WASM** — frontend adj_factor calc only
 - **NO TCP/HTTP bridge** for miniQMT — Redis Stream only
+- **NO direct Tushare HTTP for historical data** — read from PG (ETL handles Tushare); only `realtime_quote` (5-level snapshot) may call Tushare directly
 
 ### Redis Streams
 - `trade_orders` — order dispatch (consumer group: `quant_executor`)
@@ -78,8 +80,10 @@ sudo journalctl -u quant-engine -f
 
 ### Environment Variables
 All config from env vars. See `.env.example` for reference. Required at startup:
-- `PG_HOST`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`
-- `TUSHARE_TOKEN` (for engine)
+- `PG_HOST`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE` (defaults point at the ETL-populated PG at `192.168.3.11 / quant_db / quant_user`)
+
+Optional:
+- `TUSHARE_TOKEN` — only needed for `RealtimeQuoteClient.get_realtime_snapshot` (5-level bid/ask). Pure PG-read mode does not need it.
 
 ### Order State Machine
 7 states: `PENDING → SENT → ACK → FILLED | PARTIAL | REJECTED | CANCELLED`
